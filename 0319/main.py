@@ -11,8 +11,14 @@ def main() -> None:
         print(log_text)
     except FileNotFoundError:
         print(f"Log file not found: {log_file}")
+    except PermissionError:
+        print(f"Permission denied: {log_file}")
+    except IsADirectoryError:
+        print(f"Expected a file, but found a directory: {log_file}")
+    except UnicodeDecodeError:
+        print(f"Failed to decode log file as UTF-8: {log_file}")
     except OSError as e:
-        # 파일 경로/권한 등 읽기 과정에서 발생할 수 있는 예외 처리
+        # 기타 운영체제 수준 파일 입출력 예외 처리
         print(f"Failed to read log file: {e}")
 
 
