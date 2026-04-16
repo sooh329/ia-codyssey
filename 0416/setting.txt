@@ -1,0 +1,17 @@
+# 출력할 항목을 이 파일에서 설정할 수 있습니다.
+#
+# 규칙
+# - 빈 줄, # 로 시작하는 줄은 무시합니다.
+# - "info.<키>"  : 시스템 정보(get_mission_computer_info)에서만 출력
+# - "load.<키>"  : 부하(get_mission_computer_load)에서만 출력
+# - "<키>"       : info / load 둘 다에 있으면 출력
+#
+# 사용 예시
+# info.operating_system
+# info.operating_system_version
+# info.cpu_type
+# info.cpu_cores
+# info.memory_size_bytes
+# load.cpu_usage_percent
+# load.memory_usage_percent
+
