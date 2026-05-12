@@ -2,6 +2,8 @@ import itertools
 import multiprocessing
 import os
 import string
+import sys
+import traceback
 import zipfile
 import zlib
 from datetime import datetime
@@ -10,6 +12,7 @@ from datetime import datetime
 DEFAULT_ZIP_FILENAME = 'emergency_storage_key.zip'
 DEFAULT_PASSWORD_FILENAME = 'password.txt'
 PASSWORD_LEN = 6
+FORCED_PREFIX = 'mars'
 
 _STOP_EVENT = None
 
@@ -44,12 +47,13 @@ def _crack_worker(args):
     Try all passwords with a fixed first character.
     Returns the password string if found, else None.
     """
-    zip_path, prefix, charset = args
+    zip_path, prefix, charset, log_every, debug = args
 
     if _STOP_EVENT is not None and _STOP_EVENT.is_set():
         return None
 
     zf = None
+    tries = 0
     try:
         zf = zipfile.ZipFile(zip_path, 'r')
         names = zf.namelist()
@@ -63,6 +67,10 @@ def _crack_worker(args):
 
             password = prefix + ''.join(combo)
             pwd_bytes = password.encode('utf-8')
+            tries += 1
+
+            if log_every and (tries % log_every == 0):
+                print(f'[{os.getpid()}] tried: {password}', flush=True)
 
             if _check_password(zf, entry_name, pwd_bytes):
                 if _STOP_EVENT is not None:
@@ -70,6 +78,9 @@ def _crack_worker(args):
                 return password
 
     except Exception:
+        if debug:
+            print(f'[{os.getpid()}] worker error (prefix={prefix!r}):', file=sys.stderr, flush=True)
+            traceback.print_exc()
         return None
     finally:
         if zf is not None:
@@ -84,6 +95,9 @@ def _crack_worker(args):
 def unlock_zip(
     zip_path=None,
     output_path=None,
+    prefix='',
+    log_every=0,
+    debug=False,
 ):
     """
     Brute-force zip password (6 chars: lowercase + digits). Saves to password.txt on success.
@@ -91,6 +105,13 @@ def unlock_zip(
 
     Uses only a tiny read per guess (not ZipFile.read which decompresses the whole entry).
     """
+    if prefix is None:
+        prefix = ''
+    prefix = str(prefix)
+    if len(prefix) > PASSWORD_LEN:
+        print(f'ERROR: prefix too long (len={len(prefix)}), PASSWORD_LEN={PASSWORD_LEN}')
+        return None
+
     here = _script_dir()
     if zip_path is None:
         zip_path = os.path.join(here, DEFAULT_ZIP_FILENAME)
@@ -121,16 +142,37 @@ def unlock_zip(
     charset = string.ascii_lowercase + string.digits
     cpu_count = multiprocessing.cpu_count() or 1
 
+    try:
+        log_every = int(log_every or 0)
+    except (TypeError, ValueError):
+        log_every = 0
+
     start_time = datetime.now()
     print(f'start time: {start_time.strftime("%Y-%m-%d %H:%M:%S")}')
     print(f'cpu cores: {cpu_count}')
-    print(f'search space: {len(charset)}^{PASSWORD_LEN} = {len(charset) ** PASSWORD_LEN:,}')
-    print(f'per worker (1 leading char fixed): {len(charset) ** (PASSWORD_LEN - 1):,}')
+    if prefix:
+        remaining = PASSWORD_LEN - len(prefix)
+        print(f'prefix: {prefix!r} (remaining length: {remaining})')
+        print(f'search space: {len(charset)}^{remaining} = {len(charset) ** remaining:,}')
+    else:
+        print(f'search space: {len(charset)}^{PASSWORD_LEN} = {len(charset) ** PASSWORD_LEN:,}')
+        print(f'per worker (1 leading char fixed): {len(charset) ** (PASSWORD_LEN - 1):,}')
     print('note: using open().read(1) per guess (much faster than ZipFile.read whole file)')
 
     stop_event = multiprocessing.Event()
 
-    tasks = [(zip_path, char, charset) for char in charset]
+    if prefix:
+        remaining = PASSWORD_LEN - len(prefix)
+        if remaining <= 0:
+            tasks = [(zip_path, prefix, charset, log_every, debug)]
+        elif remaining == 1:
+            tasks = [(zip_path, prefix + char, charset, log_every, debug) for char in charset]
+        else:
+            # Parallelize by fixing the next character after the prefix.
+            tasks = [(zip_path, prefix + char, charset, log_every, debug) for char in charset]
+            print(f'per worker (prefix + 1 char fixed): {len(charset) ** (remaining - 1):,}')
+    else:
+        tasks = [(zip_path, char, charset, log_every, debug) for char in charset]
 
     found_password = None
     pool = multiprocessing.Pool(
@@ -171,7 +213,30 @@ def unlock_zip(
 
 
 def main():
-    unlock_zip()
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Brute-force zip password (lowercase + digits).')
+    parser.add_argument('--zip', dest='zip_path', default=None, help='Path to zip file.')
+    parser.add_argument('--out', dest='output_path', default=None, help='Path to save found password.')
+    parser.add_argument(
+        '--log-every',
+        dest='log_every',
+        default=0,
+        help='Print progress every N attempts per worker. Use 1 to log every try (very noisy).',
+    )
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Print worker exceptions to stderr (helps when nothing seems to happen).',
+    )
+    args = parser.parse_args()
+    unlock_zip(
+        zip_path=args.zip_path,
+        output_path=args.output_path,
+        prefix=FORCED_PREFIX,
+        log_every=args.log_every,
+        debug=args.debug,
+    )
 
 
 if __name__ == '__main__':
